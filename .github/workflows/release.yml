@@ -97,6 +97,7 @@ jobs:
           if (-not (Test-Path $logPath)) {
             Write-Output "diagnostic-categories=install-log-missing"
             Write-Output "diagnostic-components=none"
+            Write-Output "diagnostic-dependencies=none"
             Write-Output "diagnostic-codes=none"
             exit 0
           }
@@ -137,10 +138,22 @@ jobs:
             [PSCustomObject]@{ Name = $_.Key; Position = $position }
           } | Where-Object { $_.Position -ge 0 } | Sort-Object Position -Descending)
           $components = if ($componentPositions.Count -gt 0) { @($componentPositions[0].Name) } else { @("unknown") }
+          $dependencyRules = [ordered]@{
+            "crypto" = "openssl(?:[\\/]|\.h|_static)"
+            "node-api" = "node-addon-api|node_api\.h|(?:^|[\\/])napi\.h"
+            "async-io" = "asio(?:[\\/]|\.hpp)|asio_net"
+            "database" = "sqlite(?:3|_orm)?(?:[\\/]|\.h)"
+            "spreadsheet" = "xlnt(?:[\\/]|\.h|\.hpp)"
+            "windows-sdk" = "(?:windows|Wbemidl|ntddscsi|processthreadsapi)\.h"
+            "standard-library" = "cannot open include file:\s*'(?:format|ranges|span|source_location|coroutine)'"
+          }
+          $dependencies = @($dependencyRules.GetEnumerator() | Where-Object { $log -match $_.Value } | ForEach-Object { $_.Key })
+          if ($dependencies.Count -eq 0) { $dependencies = @("unknown") }
           $codes = @([regex]::Matches($log, "(?i)\b(?:ERR_PNPM_[A-Z_]+|LNK\d{4}|MSB\d{4}|C\d{4}|ELIFECYCLE|E(?:PERM|ACCES|NOENT|TIMEDOUT|CONNRESET|CONNREFUSED)|SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_VERIFY_LEAF_SIGNATURE|CERT_HAS_EXPIRED)\b") | ForEach-Object { $_.Value.ToUpperInvariant() } | Sort-Object -Unique)
           if ($codes.Count -eq 0) { $codes = @("none") }
           Write-Output "diagnostic-categories=$($categories -join ',')"
           Write-Output "diagnostic-components=$($components -join ',')"
+          Write-Output "diagnostic-dependencies=$($dependencies -join ',')"
           Write-Output "diagnostic-codes=$($codes -join ',')"
 
       - name: Build Windows release
