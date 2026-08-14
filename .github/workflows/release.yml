@@ -1,0 +1,135 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Immutable source tag, for example v0.3.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.source_ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    env:
+      SKIP_OPTIONAL_MODELS: "1"
+      RELEASE_CHANNEL_OWNER: ${{ github.repository_owner }}
+      RELEASE_CHANNEL_REPO: ${{ github.event.repository.name }}
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ secrets.SOURCE_REPOSITORY }}
+          token: ${{ secrets.SOURCE_REPO_TOKEN }}
+          ref: ${{ inputs.source_ref }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: true
+
+      - name: Fetch binary assets
+        shell: pwsh
+        working-directory: source
+        env:
+          READ_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+        run: |
+          $raw = "x-access-token:$env:READ_TOKEN"
+          $credential = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($raw))
+          $githubUrl = "url.https://github.com/.insteadOf=git@github.com:"
+          $authHeader = "http.https://github.com/.extraheader=AUTHORIZATION: basic $credential"
+          git -c $githubUrl -c $authHeader submodule update --init --recursive *> "$env:RUNNER_TEMP/assets.log"
+          if ($LASTEXITCODE -ne 0) { throw "Binary asset checkout failed" }
+          git -c $githubUrl -c $authHeader submodule foreach --recursive "git lfs pull" *> "$env:RUNNER_TEMP/assets.log"
+          if ($LASTEXITCODE -ne 0) { throw "Binary asset download failed" }
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with:
+          version: 10.28.2
+
+      - name: Set up Node
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: source/pnpm-lock.yaml
+
+      - name: Verify version
+        shell: pwsh
+        working-directory: source
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          if ($env:SOURCE_REF -notmatch '^v?\d+\.\d+\.\d+$') {
+            throw "Release ref must be a semantic version tag"
+          }
+          git show-ref --verify --quiet "refs/tags/$env:SOURCE_REF"
+          if ($LASTEXITCODE -ne 0) { throw "Release ref is not a tag" }
+          $expected = $env:SOURCE_REF.TrimStart("v")
+          $actual = node -p "require('./package.json').version"
+          if ($actual -ne $expected) {
+            throw "Tag and package version do not match"
+          }
+
+      - name: Install dependencies
+        shell: pwsh
+        working-directory: source
+        run: |
+          pnpm install --frozen-lockfile *> "$env:RUNNER_TEMP/install.log"
+          if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed" }
+
+      - name: Build Windows release
+        shell: pwsh
+        working-directory: source
+        run: |
+          pnpm run build:win -- --publish never *> "$env:RUNNER_TEMP/build.log"
+          if ($LASTEXITCODE -ne 0) { throw "Windows build failed" }
+          $assets = Get-ChildItem -Path release -Recurse -File | Where-Object {
+            $_.Name -eq "latest.yml" -or $_.Name -like "client-win-x64-*.exe" -or $_.Name -like "*.blockmap"
+          }
+          if (-not $assets) { throw "Release artifacts are missing" }
+
+      - name: Stage release assets
+        shell: pwsh
+        working-directory: source
+        run: |
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/release-assets" | Out-Null
+          Get-ChildItem -Path release -Recurse -File | Where-Object {
+            $_.Name -eq "latest.yml" -or $_.Name -like "client-win-x64-*.exe" -or $_.Name -like "*.blockmap"
+          } | Copy-Item -Destination "$env:RUNNER_TEMP/release-assets"
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-assets
+          path: ${{ runner.temp }}/release-assets/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: release-assets
+          path: assets
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REF: ${{ inputs.source_ref }}
+        run: gh release create "$RELEASE_REF" assets/* --title "$RELEASE_REF" --notes "Binary release." --latest
