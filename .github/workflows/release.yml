@@ -176,6 +176,8 @@ jobs:
           if (-not (Test-Path $logPath)) {
             Write-Output "build-diagnostic-categories=build-log-missing"
             Write-Output "build-diagnostic-components=none"
+            Write-Output "build-diagnostic-signatures=none"
+            Write-Output "build-diagnostic-error-tokens=none"
             Write-Output "build-diagnostic-codes=none"
             exit 0
           }
@@ -185,6 +187,12 @@ jobs:
             "installer" = "makensis|NSIS"
             "signing" = "winCodeSign|code.?sign|certificate"
             "javascript-bundler" = "vite|esbuild"
+            "native-rebuild" = "@electron/rebuild|rebuild native|install-app-deps"
+            "node-gyp" = "gyp ERR!"
+            "cmake" = "CMake Error|CMAKE_(?:C|CXX)_COMPILER"
+            "visual-studio" = "Could not find.+Visual Studio|No compatible version of Visual Studio|gyp ERR!.+find VS"
+            "compiler" = "(?:fatal )?error C\d{4}"
+            "linker" = "LNK\d{4}"
             "node-module" = "Cannot find module"
             "permissions" = "EPERM|EACCES|Cannot create symbolic link|required privilege"
             "missing-file" = "ENOENT|No such file or directory|cannot find the (?:file|path)"
@@ -196,26 +204,77 @@ jobs:
           }
           $categories = @($rules.GetEnumerator() | Where-Object { $log -match $_.Value } | ForEach-Object { $_.Key })
           if ($categories.Count -eq 0) { $categories = @("unclassified") }
+          $lines = @($log -split "\r?\n")
+          $errorIndexes = @(for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match "(?i)(?:⨯|error|failed|ELIFECYCLE|cannot)") { $i }
+          })
+          $errorWindow = ($lines | Select-Object -Last 80) -join "`n"
+          if ($errorIndexes.Count -gt 0) {
+            $errorIndex = $errorIndexes[-1]
+            $windowStart = [Math]::Max(0, $errorIndex - 30)
+            $windowEnd = [Math]::Min($lines.Count - 1, $errorIndex + 30)
+            $errorWindow = ($lines[$windowStart..$windowEnd]) -join "`n"
+          }
           $componentMarkers = [ordered]@{
+            "audio-runtime" = @("naudiodon2")
+            "project-native" = @("src_native", "cmake-js")
+            "image-runtime" = @("sharp")
             "installer" = @("makensis", "NSIS")
             "signing-runtime" = @("winCodeSign")
             "packager" = @("electron-builder", "app-builder")
             "javascript-bundler" = @("vite", "esbuild")
             "native-binary" = @(".node", "native")
           }
-          $componentPositions = @($componentMarkers.GetEnumerator() | ForEach-Object {
-            $position = -1
-            foreach ($marker in $_.Value) {
-              $candidate = $log.LastIndexOf($marker, [StringComparison]::OrdinalIgnoreCase)
-              if ($candidate -gt $position) { $position = $candidate }
+          $components = @()
+          foreach ($entry in $componentMarkers.GetEnumerator()) {
+            foreach ($marker in $entry.Value) {
+              if ($errorWindow.IndexOf($marker, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                $components += $entry.Key
+                break
+              }
             }
-            [PSCustomObject]@{ Name = $_.Key; Position = $position }
-          } | Where-Object { $_.Position -ge 0 } | Sort-Object Position -Descending)
-          $components = if ($componentPositions.Count -gt 0) { @($componentPositions[0].Name) } else { @("unknown") }
-          $codes = @([regex]::Matches($log, "(?i)\b(?:ERR_[A-Z_]+|ELIFECYCLE|E(?:PERM|ACCES|NOENT|NOSPC|TIMEDOUT|CONNRESET|CONNREFUSED)|SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_VERIFY_LEAF_SIGNATURE|CERT_HAS_EXPIRED)\b") | ForEach-Object { $_.Value.ToUpperInvariant() } | Sort-Object -Unique)
+          }
+          if ($components.Count -eq 0) { $components = @("unknown") }
+          $signatureRules = [ordered]@{
+            "native-rebuild" = "gyp ERR!|@electron/rebuild|rebuild native|install-app-deps"
+            "invalid-config" = "InvalidConfiguration|configuration.+(?:invalid|unknown property)|unknown property.+configuration"
+            "app-entry" = "Application entry file|main file.+does not exist"
+            "child-process" = "cannot execute|exit status|spawn.+(?:failed|error)"
+            "archive" = "7-zip|7z.+(?:error|failed)|archive.+(?:error|failed)"
+            "installer-compiler" = "makensis.+(?:error|failed)|Error in script|Internal compiler error"
+            "package-size" = "file size.+(?:too large|exceed)|exceeds.+size"
+            "native-module" = "native module|\.node.+(?:error|failed|not found)"
+          }
+          $signatures = @($signatureRules.GetEnumerator() | Where-Object { $errorWindow -match $_.Value } | ForEach-Object { $_.Key })
+          if ($signatures.Count -eq 0) { $signatures = @("unknown") }
+          $tokenRules = [ordered]@{
+            "archive" = "archive|7-zip|7z"
+            "asar" = "asar"
+            "audio" = "audio|naudiodon2"
+            "configure" = "configure|configuration"
+            "download" = "download"
+            "entry" = "entry"
+            "icon" = "icon"
+            "module" = "module"
+            "native" = "native|\.node"
+            "node-gyp" = "node-gyp|gyp ERR!"
+            "nsis" = "NSIS|makensis"
+            "publish" = "publish"
+            "rebuild" = "rebuild"
+            "resource" = "resource"
+            "sign" = "sign|certificate"
+            "symlink" = "symlink|symbolic link"
+            "unpack" = "unpack"
+            "version" = "version"
+          }
+          $errorTokens = @($tokenRules.GetEnumerator() | Where-Object { $errorWindow -match $_.Value } | ForEach-Object { $_.Key })
+          if ($errorTokens.Count -eq 0) { $errorTokens = @("none") }
+          $codes = @([regex]::Matches($errorWindow, "(?i)\b(?:ERR_[A-Z_]+|ELIFECYCLE|LNK\d{4}|MSB\d{4}|C\d{4}|E(?:PERM|ACCES|NOENT|NOSPC|TIMEDOUT|CONNRESET|CONNREFUSED)|SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_VERIFY_LEAF_SIGNATURE|CERT_HAS_EXPIRED)\b") | ForEach-Object { $_.Value.ToUpperInvariant() } | Sort-Object -Unique)
           if ($codes.Count -eq 0) { $codes = @("none") }
           Write-Output "build-diagnostic-categories=$($categories -join ',')"
           Write-Output "build-diagnostic-components=$($components -join ',')"
+          Write-Output "build-diagnostic-signatures=$($signatures -join ',')"
+          Write-Output "build-diagnostic-error-tokens=$($errorTokens -join ',')"
           Write-Output "build-diagnostic-codes=$($codes -join ',')"
 
       - name: Stage release assets
