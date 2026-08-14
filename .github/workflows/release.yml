@@ -310,4 +310,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_REF: ${{ inputs.source_ref }}
-        run: gh release create "$RELEASE_REF" assets/* --title "$RELEASE_REF" --notes "Binary release." --latest
+        run: gh release create "$RELEASE_REF" assets/* --title "$RELEASE_REF" --notes "Binary release." --latest --repo "$GITHUB_REPOSITORY"
