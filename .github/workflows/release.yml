@@ -157,6 +157,7 @@ jobs:
           Write-Output "diagnostic-codes=$($codes -join ',')"
 
       - name: Build Windows release
+        id: build_windows_release
         shell: pwsh
         working-directory: source
         run: |
@@ -166,6 +167,56 @@ jobs:
             $_.Name -eq "latest.yml" -or $_.Name -like "client-win-x64-*.exe" -or $_.Name -like "*.blockmap"
           }
           if (-not $assets) { throw "Release artifacts are missing" }
+
+      - name: Classify build failure
+        if: failure() && steps.build_windows_release.outcome == 'failure'
+        shell: pwsh
+        run: |
+          $logPath = Join-Path $env:RUNNER_TEMP "build.log"
+          if (-not (Test-Path $logPath)) {
+            Write-Output "build-diagnostic-categories=build-log-missing"
+            Write-Output "build-diagnostic-components=none"
+            Write-Output "build-diagnostic-codes=none"
+            exit 0
+          }
+          $log = Get-Content $logPath -Raw
+          $rules = [ordered]@{
+            "packager" = "electron-builder|app-builder"
+            "installer" = "makensis|NSIS"
+            "signing" = "winCodeSign|code.?sign|certificate"
+            "javascript-bundler" = "vite|esbuild"
+            "node-module" = "Cannot find module"
+            "permissions" = "EPERM|EACCES|Cannot create symbolic link|required privilege"
+            "missing-file" = "ENOENT|No such file or directory|cannot find the (?:file|path)"
+            "path-length" = "path too long|filename or extension is too long"
+            "disk-space" = "ENOSPC|no space left on device"
+            "out-of-memory" = "heap out of memory|not enough memory"
+            "network" = "ETIMEDOUT|ECONNRESET|ECONNREFUSED|Failed to download|HTTP [45]\d{2}"
+            "network-tls" = "SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_VERIFY_LEAF_SIGNATURE|CERT_HAS_EXPIRED|certificate has expired"
+          }
+          $categories = @($rules.GetEnumerator() | Where-Object { $log -match $_.Value } | ForEach-Object { $_.Key })
+          if ($categories.Count -eq 0) { $categories = @("unclassified") }
+          $componentMarkers = [ordered]@{
+            "installer" = @("makensis", "NSIS")
+            "signing-runtime" = @("winCodeSign")
+            "packager" = @("electron-builder", "app-builder")
+            "javascript-bundler" = @("vite", "esbuild")
+            "native-binary" = @(".node", "native")
+          }
+          $componentPositions = @($componentMarkers.GetEnumerator() | ForEach-Object {
+            $position = -1
+            foreach ($marker in $_.Value) {
+              $candidate = $log.LastIndexOf($marker, [StringComparison]::OrdinalIgnoreCase)
+              if ($candidate -gt $position) { $position = $candidate }
+            }
+            [PSCustomObject]@{ Name = $_.Key; Position = $position }
+          } | Where-Object { $_.Position -ge 0 } | Sort-Object Position -Descending)
+          $components = if ($componentPositions.Count -gt 0) { @($componentPositions[0].Name) } else { @("unknown") }
+          $codes = @([regex]::Matches($log, "(?i)\b(?:ERR_[A-Z_]+|ELIFECYCLE|E(?:PERM|ACCES|NOENT|NOSPC|TIMEDOUT|CONNRESET|CONNREFUSED)|SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_VERIFY_LEAF_SIGNATURE|CERT_HAS_EXPIRED)\b") | ForEach-Object { $_.Value.ToUpperInvariant() } | Sort-Object -Unique)
+          if ($codes.Count -eq 0) { $codes = @("none") }
+          Write-Output "build-diagnostic-categories=$($categories -join ',')"
+          Write-Output "build-diagnostic-components=$($components -join ',')"
+          Write-Output "build-diagnostic-codes=$($codes -join ',')"
 
       - name: Stage release assets
         shell: pwsh
