@@ -96,6 +96,7 @@ jobs:
           $logPath = Join-Path $env:RUNNER_TEMP "install.log"
           if (-not (Test-Path $logPath)) {
             Write-Output "diagnostic-categories=install-log-missing"
+            Write-Output "diagnostic-components=none"
             Write-Output "diagnostic-codes=none"
             exit 0
           }
@@ -107,16 +108,39 @@ jobs:
             "compiler" = "(?:fatal )?error C\d{4}"
             "linker" = "LNK\d{4}"
             "cmake" = "CMake Error|CMAKE_(?:C|CXX)_COMPILER"
+            "cmake-generator" = "Could not create named generator|generator.+not available"
+            "visual-studio" = "Could not find.+Visual Studio|No compatible version of Visual Studio|gyp ERR!.+find VS"
+            "windows-sdk" = "Windows SDK.+(?:not found|not installed)|KitsRoot"
+            "node-gyp" = "gyp ERR!"
+            "node-module" = "Cannot find module"
             "permissions" = "EPERM|EACCES|Cannot create symbolic link"
             "missing-file" = "ENOENT|No such file or directory"
-            "network" = "ETIMEDOUT|ECONNRESET|Failed to download|HTTP [45]\d{2}"
+            "network" = "ETIMEDOUT|ECONNRESET|ECONNREFUSED|Failed to download|HTTP [45]\d{2}"
+            "network-tls" = "SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_VERIFY_LEAF_SIGNATURE|CERT_HAS_EXPIRED|certificate has expired"
             "native-prebuild" = "No prebuilt binaries|Unsupported platform"
           }
           $categories = @($rules.GetEnumerator() | Where-Object { $log -match $_.Value } | ForEach-Object { $_.Key })
           if ($categories.Count -eq 0) { $categories = @("unclassified") }
-          $codes = @([regex]::Matches($log, "(?i)\b(?:ERR_PNPM_[A-Z_]+|LNK\d{4}|MSB\d{4}|C\d{4}|ELIFECYCLE|E(?:PERM|ACCES|NOENT|TIMEDOUT|CONNRESET))\b") | ForEach-Object { $_.Value.ToUpperInvariant() } | Sort-Object -Unique)
+          $componentMarkers = [ordered]@{
+            "project-native" = @("src_native", "cmake-js")
+            "electron-runtime" = @("electron")
+            "javascript-bundler" = @("esbuild")
+            "image-runtime" = @("sharp")
+            "audio-runtime" = @("naudiodon2")
+          }
+          $componentPositions = @($componentMarkers.GetEnumerator() | ForEach-Object {
+            $position = -1
+            foreach ($marker in $_.Value) {
+              $candidate = $log.LastIndexOf($marker, [StringComparison]::OrdinalIgnoreCase)
+              if ($candidate -gt $position) { $position = $candidate }
+            }
+            [PSCustomObject]@{ Name = $_.Key; Position = $position }
+          } | Where-Object { $_.Position -ge 0 } | Sort-Object Position -Descending)
+          $components = if ($componentPositions.Count -gt 0) { @($componentPositions[0].Name) } else { @("unknown") }
+          $codes = @([regex]::Matches($log, "(?i)\b(?:ERR_PNPM_[A-Z_]+|LNK\d{4}|MSB\d{4}|C\d{4}|ELIFECYCLE|E(?:PERM|ACCES|NOENT|TIMEDOUT|CONNRESET|CONNREFUSED)|SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_VERIFY_LEAF_SIGNATURE|CERT_HAS_EXPIRED)\b") | ForEach-Object { $_.Value.ToUpperInvariant() } | Sort-Object -Unique)
           if ($codes.Count -eq 0) { $codes = @("none") }
           Write-Output "diagnostic-categories=$($categories -join ',')"
+          Write-Output "diagnostic-components=$($components -join ',')"
           Write-Output "diagnostic-codes=$($codes -join ',')"
 
       - name: Build Windows release
