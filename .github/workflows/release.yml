@@ -90,7 +90,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed" }
 
       - name: Classify dependency failure
-        if: steps.install_dependencies.outcome == 'failure'
+        if: failure() && steps.install_dependencies.outcome == 'failure'
         shell: pwsh
         run: |
           $logPath = Join-Path $env:RUNNER_TEMP "install.log"
