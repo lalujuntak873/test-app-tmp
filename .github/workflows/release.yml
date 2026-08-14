@@ -161,7 +161,7 @@ jobs:
         shell: pwsh
         working-directory: source
         run: |
-          pnpm run build:win -- --publish never *> "$env:RUNNER_TEMP/build.log"
+          pnpm run build:win *> "$env:RUNNER_TEMP/build.log"
           if ($LASTEXITCODE -ne 0) { throw "Windows build failed" }
           $assets = Get-ChildItem -Path release -Recurse -File | Where-Object {
             $_.Name -eq "latest.yml" -or $_.Name -like "client-win-x64-*.exe" -or $_.Name -like "*.blockmap"
@@ -271,62 +271,11 @@ jobs:
           if ($errorTokens.Count -eq 0) { $errorTokens = @("none") }
           $codes = @([regex]::Matches($errorWindow, "(?i)\b(?:ERR_[A-Z_]+|ELIFECYCLE|LNK\d{4}|MSB\d{4}|C\d{4}|E(?:PERM|ACCES|NOENT|NOSPC|TIMEDOUT|CONNRESET|CONNREFUSED)|SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_VERIFY_LEAF_SIGNATURE|CERT_HAS_EXPIRED)\b") | ForEach-Object { $_.Value.ToUpperInvariant() } | Sort-Object -Unique)
           if ($codes.Count -eq 0) { $codes = @("none") }
-          $secureWindow = ($lines | Select-Object -Last 250) -join "`n"
-          if ($errorIndexes.Count -gt 0) {
-            $secureWindowStart = [Math]::Max(0, $errorIndexes[-1] - 220)
-            $secureWindowEnd = [Math]::Min($lines.Count - 1, $errorIndexes[-1] + 20)
-            $secureWindow = ($lines[$secureWindowStart..$secureWindowEnd]) -join "`n"
-          }
-          $contextPath = Join-Path $env:RUNNER_TEMP "build-diagnostic-context.txt"
-          $certificatePath = Join-Path $env:RUNNER_TEMP "build-diagnostic-cert.pem"
-          $encryptedPath = Join-Path $env:RUNNER_TEMP "build-diagnostic-context.cms"
-          $certificate = @"
-          -----BEGIN CERTIFICATE-----
-          MIIEJTCCAo2gAwIBAgIUQZBZq5rYj29NOabGiGFY8HFxCREwDQYJKoZIhvcNAQEL
-          BQAwIjEgMB4GA1UEAwwXdGVtcG9yYXJ5LWNpLWRpYWdub3N0aWMwHhcNMjYwODE0
-          MTI0NTQ0WhcNMjYwODE2MTI0NTQ0WjAiMSAwHgYDVQQDDBd0ZW1wb3JhcnktY2kt
-          ZGlhZ25vc3RpYzCCAaIwDQYJKoZIhvcNAQEBBQADggGPADCCAYoCggGBANPS1mw6
-          LhH824kTja6Ul8m2JU/GtAc7XHDNZTKgMMpdgIT6m0RFet4Lm5Eitpy77YtpGzMK
-          wnSIga3jBGtZ+RcLSlphCf4eKcQlwABULvnB7r/j4XB/O3Q/Q+5mr3Wff3a/mA+V
-          tXemgf1uMOdZVM1M6kA4GHRdqtpfgmNd4QBANwX0BshBoXy5MYepE3VJO8Nf8kXJ
-          XxbVf8b9P6J6wigCmlbOIi9g0ilYerTS3zOgR8uvRSebGGo6S0brETpTZ9b54NKu
-          o1qQvaU7QY5GkvSobb6QKl3WdS8EvMiraAC/wdLaofUzZQMJCt+yELxnkoWwDP4O
-          kjvY/Cu3ugxlR30WSOQHtfXhhoBcpEltcBFaF8X4I3UtgQY7CR45fqYqBpR3x8ir
-          d7/wDwXfrYa5M8MQ/Yl6D0UrWTfb1xG+z7w3cdPpgxGFIfRgsRPlOT6AFszRza8D
-          gJnsjHeexo//q93wYCIvUqtEtKeezKHKAVgBUVj7SYO9b2imVcoEuCjZbwIDAQAB
-          o1MwUTAdBgNVHQ4EFgQUASutfYCSqTzoVg8/whSfgVx3Su8wHwYDVR0jBBgwFoAU
-          ASutfYCSqTzoVg8/whSfgVx3Su8wDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0B
-          AQsFAAOCAYEAq3J8uJLIvfpykR92WMtXx4re5R6l2DOGnPB9ixmSeLOt65mRBfd2
-          zNmhbXYarHyaJgJpT7YWCIWTAZ2FFVMwSGimiuiorSdcrjkstJsjUcihcjf1Ccs3
-          7FQsJTLaO1D0WJWW+yYXO9rkl2KjDyzDiosPoXemu3PTB0IX/4UHWEAxOS5JJpY/
-          HTH94wbRNP++RI36t/oOpLouu4Feh/9An9xhnKiocceFanYyqh5jpDIGYLCDL1E2
-          3S7P4BzTHLSrW6aTpxWkRR9vi5wNLOf69cwJVUy7Mk5AqA1gWYk0bMTm81GSWBGj
-          fDhi37wsDRrZW6D+blf2gYLpPCMi2tYLDMTMEHLoJkhaRc426XJMWhycIYVFehw6
-          5+aB8Og/Q93lHrES0LJVe2dDXiGUH8RjTkqzzCfioPh8PKbBMGsQnKBJdBkROYmY
-          JaHtAjCl8B53knEyXYxIGxXvD03sJxv1dsDh/P3OF6QhsgUfJq6KdpxnQzPOItZX
-          8ZFMXvZmWpnQ
-          -----END CERTIFICATE-----
-          "@
-          Set-Content -Path $contextPath -Value $secureWindow -Encoding utf8
-          Set-Content -Path $certificatePath -Value $certificate -Encoding ascii
-          & openssl cms -encrypt -binary -aes256 -in $contextPath -outform DER -out $encryptedPath $certificatePath 2>$null
-          $encryptedContextChunks = @("unavailable")
-          if ($LASTEXITCODE -eq 0 -and (Test-Path $encryptedPath)) {
-            $ciphertext = [Convert]::ToBase64String([IO.File]::ReadAllBytes($encryptedPath))
-            $encryptedContextChunks = @()
-            for ($offset = 0; $offset -lt $ciphertext.Length; $offset += 180) {
-              $chunkLength = [Math]::Min(180, $ciphertext.Length - $offset)
-              $encryptedContextChunks += $ciphertext.Substring($offset, $chunkLength)
-            }
-          }
           Write-Output "build-diagnostic-categories=$($categories -join ',')"
           Write-Output "build-diagnostic-components=$($components -join ',')"
           Write-Output "build-diagnostic-signatures=$($signatures -join ',')"
           Write-Output "build-diagnostic-error-tokens=$($errorTokens -join ',')"
           Write-Output "build-diagnostic-codes=$($codes -join ',')"
-          foreach ($chunk in $encryptedContextChunks) {
-            Write-Output "build-diagnostic-encrypted-context=$chunk"
-          }
 
       - name: Stage release assets
         shell: pwsh
