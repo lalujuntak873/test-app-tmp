@@ -82,11 +82,42 @@ jobs:
           }
 
       - name: Install dependencies
+        id: install_dependencies
         shell: pwsh
         working-directory: source
         run: |
           pnpm run install:win -- --frozen-lockfile *> "$env:RUNNER_TEMP/install.log"
           if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed" }
+
+      - name: Classify dependency failure
+        if: steps.install_dependencies.outcome == 'failure'
+        shell: pwsh
+        run: |
+          $logPath = Join-Path $env:RUNNER_TEMP "install.log"
+          if (-not (Test-Path $logPath)) {
+            Write-Output "diagnostic-categories=install-log-missing"
+            Write-Output "diagnostic-codes=none"
+            exit 0
+          }
+          $log = Get-Content $logPath -Raw
+          $rules = [ordered]@{
+            "pnpm-lockfile" = "ERR_PNPM_(?:LOCKFILE|OUTDATED_LOCKFILE|BROKEN_LOCKFILE)"
+            "resource-compiler" = "LNK1158"
+            "msbuild" = "MSB\d{4}"
+            "compiler" = "(?:fatal )?error C\d{4}"
+            "linker" = "LNK\d{4}"
+            "cmake" = "CMake Error|CMAKE_(?:C|CXX)_COMPILER"
+            "permissions" = "EPERM|EACCES|Cannot create symbolic link"
+            "missing-file" = "ENOENT|No such file or directory"
+            "network" = "ETIMEDOUT|ECONNRESET|Failed to download|HTTP [45]\d{2}"
+            "native-prebuild" = "No prebuilt binaries|Unsupported platform"
+          }
+          $categories = @($rules.GetEnumerator() | Where-Object { $log -match $_.Value } | ForEach-Object { $_.Key })
+          if ($categories.Count -eq 0) { $categories = @("unclassified") }
+          $codes = @([regex]::Matches($log, "(?i)\b(?:ERR_PNPM_[A-Z_]+|LNK\d{4}|MSB\d{4}|C\d{4}|ELIFECYCLE|E(?:PERM|ACCES|NOENT|TIMEDOUT|CONNRESET))\b") | ForEach-Object { $_.Value.ToUpperInvariant() } | Sort-Object -Unique)
+          if ($codes.Count -eq 0) { $codes = @("none") }
+          Write-Output "diagnostic-categories=$($categories -join ',')"
+          Write-Output "diagnostic-codes=$($codes -join ',')"
 
       - name: Build Windows release
         shell: pwsh
