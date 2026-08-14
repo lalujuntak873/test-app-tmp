@@ -85,7 +85,7 @@ jobs:
         shell: pwsh
         working-directory: source
         run: |
-          pnpm install --frozen-lockfile *> "$env:RUNNER_TEMP/install.log"
+          pnpm run install:win -- --frozen-lockfile *> "$env:RUNNER_TEMP/install.log"
           if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed" }
 
       - name: Build Windows release
